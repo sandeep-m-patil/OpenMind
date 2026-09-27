@@ -13,6 +13,7 @@ in **[Hindsight](https://github.com/vectorize-io/hindsight)** so the next recomm
 Built for **HackwithHyderabad 3.0** — theme: *"AI Agents That Learn Using Hindsight"*.
 Runs entirely on a laptop at **₹0** (Docker, self-hosted Hindsight, optional free-tier LLMs).
 
+▶️ **How to run it (step by step):** [RUN.md](RUN.md) ·
 📘 **Tech stack, architecture and every command:** [TECH_STACK.md](TECH_STACK.md) ·
 🎬 **Live demo script:** [docs/demo.md](docs/demo.md)
 
@@ -256,6 +257,7 @@ OpsMind/
 
 | Document | Contents |
 |---|---|
+| [RUN.md](RUN.md) | Step-by-step commands to run the whole demo |
 | [TECH_STACK.md](TECH_STACK.md) | Technology choices, architecture diagrams, component internals, every command, troubleshooting |
 | [docs/architecture.md](docs/architecture.md) | Design decisions and why |
 | [docs/setup.md](docs/setup.md) | Step-by-step setup, including optional Gemini, Slack and Jenkins |
