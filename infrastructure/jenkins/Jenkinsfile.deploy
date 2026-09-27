@@ -1,0 +1,66 @@
+// product-api: test → build versioned image → deploy → smoke test → tell OpsMind.
+// The repo is mounted read-only at /opsmind; work happens in the job workspace.
+pipeline {
+  agent any
+  options { disableConcurrentBuilds() }
+  environment {
+    TAG = "build-${env.BUILD_NUMBER}"
+    COMPOSE = "docker compose -f /opsmind/docker-compose.yml --env-file /opsmind/.env"
+  }
+  stages {
+    stage('Checkout') {
+      steps {
+        deleteDir()
+        sh 'tar -C /opsmind --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache -cf - product-api | tar -xf -'
+        sh '''
+          git config --global --add safe.directory /opsmind
+          (git -C /opsmind log -1 --format=%h 2>/dev/null || echo uncommitted) > commit.txt
+          (git -C /opsmind log -1 --format=%an 2>/dev/null || echo unknown) > author.txt
+          (git -C /opsmind log -5 --format=%s -- product-api 2>/dev/null || true) > changes.txt
+        '''
+      }
+    }
+    stage('Test') {
+      steps {
+        dir('product-api') {
+          sh 'python3 -m venv .venv && .venv/bin/pip install -q -r requirements-dev.txt && .venv/bin/pytest -q'
+        }
+      }
+    }
+    stage('Build') {
+      steps { sh 'docker build -t opsmind-product-api:$TAG product-api' }
+    }
+    stage('Deploy') {
+      steps { sh 'PRODUCT_API_TAG=$TAG $COMPOSE up -d --no-deps --no-build product-api' }
+    }
+    stage('Smoke test') {
+      steps {
+        retry(10) {
+          sleep(time: 3, unit: 'SECONDS')
+          sh 'curl -fsS http://product-api:8000/health'
+        }
+      }
+    }
+    stage('Report deployment') {
+      steps {
+        sh '''
+          python3 - <<'EOF'
+import json, os, urllib.request
+body = {
+    "service": "product-api", "version": os.environ["TAG"], "source": "jenkins",
+    "commit_sha": open("commit.txt").read().strip()[:64], "author": open("author.txt").read().strip()[:120],
+    "description": "Jenkins build " + os.environ["BUILD_NUMBER"],
+    "changes": [line.strip() for line in open("changes.txt") if line.strip()][:20],
+}
+request = urllib.request.Request("http://opsmind-backend:8000/v1/deployments", data=json.dumps(body).encode(),
+                                 headers={"Content-Type": "application/json"}, method="POST")
+try:
+    print(urllib.request.urlopen(request, timeout=10).status)
+except OSError as exc:
+    print("OpsMind unavailable, deployment not recorded:", exc)
+EOF
+        '''
+      }
+    }
+  }
+}

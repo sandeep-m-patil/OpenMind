@@ -8,11 +8,13 @@ import argparse
 import os
 import sys
 
+import httpx
 import redis
 
 from scenarios import cache_pressure
 
 DEFAULT_REDIS_URL = "redis://127.0.0.1:6380/0"  # 127.0.0.1 avoids the Windows IPv6 stall
+DEFAULT_OPSMIND_URL = "http://127.0.0.1:8002"
 REDIS_TIMEOUT_SECONDS = 5
 EXPECTED_POLICY = "volatile-lru"
 EXIT_OK = 0
@@ -32,7 +34,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=os.getenv("SIMULATOR_REDIS_URL", DEFAULT_REDIS_URL),
         help=f"Redis to target (default: {DEFAULT_REDIS_URL})",
     )
+    parser.add_argument("--opsmind-url", default=os.getenv("OPSMIND_URL", DEFAULT_OPSMIND_URL),
+                        help="OpsMind backend, to record the story's deployment event")
+    parser.add_argument("--no-deploy-event", action="store_true", help="don't record the auth-service deploy")
     return parser.parse_args(argv)
+
+
+def _record_deploy_event(opsmind_url: str) -> None:
+    """Best effort: tell OpsMind about the deploy that 'caused' the incident (for correlation)."""
+    try:
+        httpx.post(f"{opsmind_url}/v1/deployments", json=cache_pressure.DEPLOY_EVENT,
+                   timeout=REDIS_TIMEOUT_SECONDS).raise_for_status()
+        event = cache_pressure.DEPLOY_EVENT
+        print(f"Recorded deployment {event['service']} {event['version']} in OpsMind.")
+    except httpx.HTTPError as exc:
+        print(f"  NOTE: could not record deployment in OpsMind ({exc}); continuing.")
 
 
 def _print_status(state: cache_pressure.CacheStatus) -> None:
@@ -57,6 +73,8 @@ def _run(client: redis.Redis, args: argparse.Namespace) -> None:
         deleted = cache_pressure.restore(client)
         print(f"Restored: removed {deleted} injected session keys.")
     else:
+        if not args.no_deploy_event:
+            _record_deploy_event(args.opsmind_url)
         result = cache_pressure.inject(client)
         print(
             f"Injected cache saturation: {result.active_written} active + "

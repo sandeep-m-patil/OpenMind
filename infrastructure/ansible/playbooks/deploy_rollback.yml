@@ -1,0 +1,19 @@
+# RB-DEPLOY-001 — Trigger the Jenkins rollback job. --check only verifies the job exists.
+- name: RB-DEPLOY-001 roll back deployment
+  hosts: local
+  gather_facts: false
+  vars:
+    service: product-api
+  tasks:
+    - name: Roll back {{ service }} via Jenkins
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/../scripts/rollback_deployment.py"
+          - --service
+          - "{{ service }}"
+          - --result-file
+          - "{{ opsmind_result_file }}"
+          - "{{ '--dry-run' if ansible_check_mode else '--apply' }}"
+      check_mode: false
+      changed_when: not ansible_check_mode

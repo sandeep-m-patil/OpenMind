@@ -1,0 +1,16 @@
+id: RB-SERVICE-001
+title: Restart application service
+strategy: service_restart
+category: service_crash
+risk: MEDIUM
+description: >-
+  Restarts the product-api container (a few seconds of unavailability). Useful when the process is
+  wedged or unhealthy. Does not fix problems in dependencies such as Redis or PostgreSQL.
+executor: ansible
+playbook: service_restart.yml
+parameters:
+  service:
+    type: string
+    default: product-api
+    enum: [product-api]
+    description: Service to restart (allowlisted).

@@ -1,0 +1,19 @@
+# RB-SERVICE-001 — Restart an allowlisted service container. --check only verifies it exists.
+- name: RB-SERVICE-001 restart service
+  hosts: local
+  gather_facts: false
+  vars:
+    service: product-api
+  tasks:
+    - name: Restart {{ service }}
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/../scripts/restart_service.py"
+          - --service
+          - "{{ service }}"
+          - --result-file
+          - "{{ opsmind_result_file }}"
+          - "{{ '--dry-run' if ansible_check_mode else '--apply' }}"
+      check_mode: false
+      changed_when: not ansible_check_mode

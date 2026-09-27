@@ -1,0 +1,30 @@
+# Jenkins Configuration-as-Code: admin user from .env, two pipeline jobs read from the mounted repo.
+jenkins:
+  systemMessage: "OpsMind CI/CD — product-api build, deploy and rollback"
+  numExecutors: 2
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "${JENKINS_ADMIN_USER}"
+          password: "${JENKINS_ADMIN_PASSWORD}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+security:
+  globalJobDslSecurityConfiguration:
+    # The job definitions below read Jenkinsfiles from the read-only repo mount at /opsmind.
+    useScriptSecurity: false
+
+jobs:
+  - script: >
+      pipelineJob('product-api-deploy') {
+        description('Test, build a versioned image, deploy, smoke-test and report the deployment to OpsMind.')
+        definition { cps { script(new File('/opsmind/infrastructure/jenkins/Jenkinsfile.deploy').text); sandbox(true) } }
+      }
+  - script: >
+      pipelineJob('product-api-rollback') {
+        description('Redeploy the previous product-api build. Triggered by OpsMind runbook RB-DEPLOY-001.')
+        definition { cps { script(new File('/opsmind/infrastructure/jenkins/Jenkinsfile.rollback').text); sandbox(true) } }
+      }

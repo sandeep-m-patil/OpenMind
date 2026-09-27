@@ -1,0 +1,12 @@
+id: RB-CACHE-002
+title: Full cache flush
+strategy: full_cache_flush
+category: cache_saturation
+risk: HIGH
+description: >-
+  Runs FLUSHDB on the product-api Redis database. Frees all memory immediately, but deletes EVERY
+  key in that database — the product cache and any other data stored in the same Redis. The product
+  cache refills from PostgreSQL afterwards (brief miss storm).
+executor: ansible
+playbook: cache_flush.yml
+parameters: {}

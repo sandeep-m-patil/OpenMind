@@ -1,0 +1,18 @@
+id: RB-CACHE-001
+title: Targeted stale-session cache cleanup
+strategy: targeted_cache_cleanup
+category: cache_saturation
+risk: LOW
+description: >-
+  Scans session:* keys in the product-api Redis and deletes only sessions whose last_seen is older
+  than max_idle_hours. Product cache entries and recently active sessions are left untouched.
+  Slower than a flush (scans every session key) but has no user-visible side effects.
+executor: ansible
+playbook: cache_cleanup_stale_sessions.yml
+parameters:
+  max_idle_hours:
+    type: integer
+    default: 24
+    min: 1
+    max: 720
+    description: Delete sessions not seen for at least this many hours.

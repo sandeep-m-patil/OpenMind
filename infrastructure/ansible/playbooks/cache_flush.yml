@@ -1,0 +1,19 @@
+# RB-CACHE-002 — Full cache flush (HIGH risk). --check only counts keys.
+- name: RB-CACHE-002 full cache flush
+  hosts: local
+  gather_facts: false
+  vars:
+    redis_url: "{{ lookup('ansible.builtin.env', 'REDIS_URL') }}"
+  tasks:
+    - name: Flush the product-api Redis database
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/../scripts/flush_cache.py"
+          - --redis-url
+          - "{{ redis_url }}"
+          - --result-file
+          - "{{ opsmind_result_file }}"
+          - "{{ '--dry-run' if ansible_check_mode else '--apply' }}"
+      check_mode: false
+      changed_when: not ansible_check_mode

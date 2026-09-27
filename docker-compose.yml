@@ -45,11 +45,16 @@ services:
 
   product-api:
     build: ./product-api
+    # Jenkins deploys versioned builds by setting PRODUCT_API_TAG=build-N (rollback = previous N).
+    image: opsmind-product-api:${PRODUCT_API_TAG:-latest}
     environment:
       SERVICE_NAME: product-api
       LOG_LEVEL: INFO
       REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      LOG_FILE: /var/log/product-api/app.log
+    volumes:
+      - product-api-logs:/var/log/product-api
     ports:
       - "127.0.0.1:${PRODUCT_API_PORT:-8001}:8000"
     depends_on:
@@ -64,5 +69,135 @@ services:
       retries: 5
     restart: unless-stopped
 
+  # ---------------- Phase 3: monitoring ----------------
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2d
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"
+    depends_on:
+      - product-api
+    restart: unless-stopped
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    command:
+      - --config.file=/etc/alertmanager/alertmanager.yml
+    volumes:
+      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    ports:
+      - "127.0.0.1:${ALERTMANAGER_PORT:-9093}:9093"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      # Local demo convenience: anyone on this machine can view dashboards without logging in.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/product-api.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3001}:3000"
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # ---------------- Phase 6: memory ----------------
+  # Open-source Hindsight (github.com/vectorize-io/hindsight), self-hosted. Embedded PostgreSQL,
+  # local embeddings. With HINDSIGHT_LLM_PROVIDER=none it runs with no API key ("chunks mode":
+  # memories stored verbatim, recalled by semantic + keyword search). Set it to gemini/groq in
+  # .env to enable LLM fact extraction.
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:${HINDSIGHT_IMAGE_TAG:-latest}
+    environment:
+      HINDSIGHT_API_LLM_PROVIDER: ${HINDSIGHT_LLM_PROVIDER:-none}
+      HINDSIGHT_API_LLM_API_KEY: ${HINDSIGHT_LLM_API_KEY:-}
+      HINDSIGHT_API_LLM_MODEL: ${HINDSIGHT_LLM_MODEL:-}
+    volumes:
+      - hindsight-data:/home/hindsight/.pg0
+    ports:
+      - "127.0.0.1:${HINDSIGHT_API_PORT:-8888}:8888"
+      - "127.0.0.1:${HINDSIGHT_UI_PORT:-9999}:9999"
+    restart: unless-stopped
+
+  # ---------------- Phases 4–14: OpsMind orchestrator ----------------
+  opsmind-backend:
+    build: ./backend
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/opsmind
+      REDIS_URL: redis://redis:6379/0
+      PROMETHEUS_URL: http://prometheus:9090
+      PRODUCT_API_URL: http://product-api:8000
+      PRODUCT_API_LOG_FILE: /var/log/product-api/app.log
+      HINDSIGHT_URL: http://hindsight:8888
+      HINDSIGHT_BANK: ${HINDSIGHT_BANK:-opsmind-sre}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-llama-3.3-70b-versatile}
+      SLACK_BOT_TOKEN: ${SLACK_BOT_TOKEN:-}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+      SLACK_CHANNEL_ID: ${SLACK_CHANNEL_ID:-}
+      DASHBOARD_URL: http://127.0.0.1:${DASHBOARD_PORT:-3002}
+      JENKINS_URL: http://jenkins:8080
+      JENKINS_USER: ${JENKINS_ADMIN_USER:-admin}
+      JENKINS_API_TOKEN: ${JENKINS_ADMIN_PASSWORD:-}
+      RUNBOOKS_DIR: /opsmind/runbooks
+      ANSIBLE_DIR: /opsmind/ansible
+    volumes:
+      - product-api-logs:/var/log/product-api:ro
+      - ./runbooks:/opsmind/runbooks:ro
+      - ./infrastructure/ansible:/opsmind/ansible:ro
+      # Needed only by RB-SERVICE-001 (restart an allowlisted container). Local demo only —
+      # access to the Docker socket is root-equivalent on the host. See docs/architecture.md.
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-8002}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      product-api:
+        condition: service_started
+    restart: unless-stopped
+
+  # ---------------- Phase 15: dashboard ----------------
+  dashboard:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-3002}:80"
+    depends_on:
+      - opsmind-backend
+    restart: unless-stopped
+
+  # ---------------- Phase 11: CI/CD (optional: docker compose --profile cicd up -d jenkins) ----------------
+  jenkins:
+    build: ./infrastructure/jenkins
+    profiles: ["cicd"]
+    # root so the pipeline can use the Docker socket to build and deploy product-api (local demo only).
+    user: root
+    environment:
+      JENKINS_ADMIN_USER: ${JENKINS_ADMIN_USER:-admin}
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:?set JENKINS_ADMIN_PASSWORD in .env}
+    volumes:
+      - jenkins-home:/var/jenkins_home
+      - .:/opsmind:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "127.0.0.1:${JENKINS_PORT:-8081}:8080"
+    restart: unless-stopped
+
 volumes:
   postgres-data:
+  hindsight-data:
+  product-api-logs:
+  jenkins-home:

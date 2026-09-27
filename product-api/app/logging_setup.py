@@ -3,6 +3,7 @@ import json
 import logging
 import sys
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 
 # Attributes every LogRecord has; anything else was passed via `extra=` and is ours.
 _STANDARD_ATTRS = set(vars(logging.LogRecord("", 0, "", 0, "", (), None))) | {"message", "asctime"}
@@ -27,9 +28,18 @@ class JsonFormatter(logging.Formatter):
         return json.dumps(payload, default=str)
 
 
-def configure_logging(service_name: str, level: str = "INFO") -> None:
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(JsonFormatter(service_name))
+LOG_FILE_MAX_BYTES = 5 * 1024 * 1024
+LOG_FILE_BACKUPS = 3
+
+
+def configure_logging(service_name: str, level: str = "INFO", log_file: str = "") -> None:
+    """stdout always; also a rotating file when log_file is set (read by OpsMind's get_logs tool)."""
+    formatter = JsonFormatter(service_name)
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+    if log_file:
+        handlers.append(RotatingFileHandler(log_file, maxBytes=LOG_FILE_MAX_BYTES, backupCount=LOG_FILE_BACKUPS))
+    for handler in handlers:
+        handler.setFormatter(formatter)
     root = logging.getLogger()
-    root.handlers = [handler]
+    root.handlers = handlers
     root.setLevel(level)

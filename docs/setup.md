@@ -1,128 +1,99 @@
 # Setup (Windows 11 + Docker Desktop)
 
-All commands are for **PowerShell**, run from the project folder (`...\Hyd3.0\OpsMind`).
+Step by step, from nothing to a running OpsMind. All commands are **PowerShell**, run from the project
+folder (`...\Hyd3.0\OpsMind`). Full command reference: [TECH_STACK.md §7](../TECH_STACK.md#7-commands).
 
-## Prerequisites
+## 1. Prerequisites
 
 | Tool | Check | Needed for |
 |---|---|---|
-| Docker Desktop (WSL2 backend) | `docker --version` | running everything |
-| Python 3.11 | `python --version` | running tests locally |
-| Git | `git --version` | version control |
+| Docker Desktop (WSL2 backend), running | `docker --version` | everything |
+| Python 3.11 | `python --version` | simulator, tests |
+| Node 24 | `node --version` | only to develop the dashboard |
+| ~8 GB free disk, 16 GB RAM recommended | | Hindsight image is 3.6 GB; Jenkins adds ~1 GB RAM |
 
-## 1. Configure
+## 2. Configure
 
 ```powershell
 Copy-Item .env.example .env
 ```
-Creates your private `.env` (git-ignored). Defaults work as-is for local development.
 
-**Ports:** OpsMind uses host ports **8001** (product-api), **5433** (Postgres) and **6380** (Redis),
-because 8000/5432/6379 are commonly taken. If one is busy, change `PRODUCT_API_PORT`,
-`POSTGRES_HOST_PORT` or `REDIS_HOST_PORT` in `.env`. Find what holds a port with:
+The defaults work as-is. OpsMind uses host ports 8001, 5433, 6380, 9090, 9093, 3001, 8002, 3002, 8888,
+9999 (and 8081 for Jenkins) because 8000/5432/6379/3000/8080 are often taken. If one is busy, change it
+in `.env`. To find what holds a port:
+
 ```powershell
-Get-NetTCPConnection -LocalPort 8001 -State Listen
+Get-NetTCPConnection -LocalPort 8002 -State Listen
 ```
 
-## 2. Start the stack
+## 3. Start
 
 ```powershell
 docker compose up -d --build
-```
-`--build` builds the product-api image; `-d` runs in the background. First run downloads images (a few minutes).
-
-```powershell
 docker compose ps
 ```
-Expected: `redis`, `postgres`, `product-api` all `Up ... (healthy)`. (product-api takes ~15 s to turn healthy.)
 
-## 3. Verify
+First start downloads images (~5 GB) and Hindsight downloads its embedding model — allow a few minutes.
+Expected: 9 services `Up`; `product-api`, `redis`, `postgres` show `(healthy)`.
 
-```powershell
-curl.exe http://localhost:8001/health
-```
-Expected: `{"data":{"status":"ok","components":{"redis":"up","postgres":"up"}},"meta":{},"error":null}`
+## 4. Verify
 
 ```powershell
-curl.exe -i http://localhost:8001/products/42
-curl.exe -i http://localhost:8001/products/42
+curl.exe http://127.0.0.1:8001/health      # product-api: "status":"ok"
+curl.exe http://127.0.0.1:8002/health      # OpsMind: prometheus up, hindsight up
 ```
-Expected: first response header `x-cache: MISS` (~260 ms), second `x-cache: HIT` (~3 ms).
 
-```powershell
-curl.exe -s http://localhost:8001/metrics | Select-String "^(cache_|redis_memory_util)"
-docker compose logs product-api --tail 10
-```
-Expected: cache hit/miss counters, Redis utilization around `0.03`, and JSON log lines.
+Open the dashboard <http://127.0.0.1:3002> (empty list) and Grafana <http://127.0.0.1:3001>.
 
-> Use `curl.exe`, not `curl` — in Windows PowerShell `curl` is an alias for `Invoke-WebRequest`.
+## 5. Simulator (one time)
 
-## 4. Run tests
-
-```powershell
-cd product-api
-python -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
-.\.venv\Scripts\python.exe -m pytest
-```
-Unit tests use fakes and need no containers. To also run the integration tests against the live stack:
-```powershell
-$env:TEST_DATABASE_URL = "postgresql://opsmind:changeme-local-only@localhost:5433/shop"
-$env:TEST_REDIS_URL    = "redis://localhost:6380/15"
-.\.venv\Scripts\python.exe -m pytest
-```
-(Use the user/password/ports from your `.env`. Redis DB 15 keeps test keys away from the app's DB 0.)
-Expected: `24 passed`, coverage above 80%.
-
-## 5. Incident simulator (Phase 2)
-
-One-time setup (its own virtual environment, so its packages don't mix with product-api's):
 ```powershell
 cd incident-simulator
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 ```
 
-Run from inside `incident-simulator\`:
-
-| Command | What it does |
-|---|---|
-| `.\.venv\Scripts\python.exe create_incident.py --type cache --status` | Show Redis memory, eviction policy, active/stale sessions |
-| `.\.venv\Scripts\python.exe create_incident.py --type cache` | **Inject** cache saturation (~3–5 s) |
-| `.\.venv\Scripts\python.exe create_incident.py --type cache --restore` | **Undo** it (removes all injected sessions) |
-| `.\.venv\Scripts\python.exe load_generator.py` | Send 50 req/s for 30 s and print p50/p95/p99, errors, hit ratio |
-| `.\.venv\Scripts\python.exe -m pytest` | Simulator tests (no containers needed) |
-
-Expected numbers on a typical laptop:
-
-| | Healthy | During cache incident |
-|---|---|---|
-| p95 latency | ~13–20 ms | ~5–7 s (keeps climbing while load runs) |
-| Cache hit ratio | 100% | ~5% |
-| Redis memory | ~4% | 100% |
-
-`--status` must show `policy : volatile-lru`. If it shows `allkeys-lru`, your Redis container predates
-Phase 2 — run `docker compose up -d --force-recreate redis`.
-
-> **Use `127.0.0.1`, not `localhost`, from Windows scripts.** `localhost` tries IPv6 first, Docker only
-> listens on IPv4, and each new connection stalls ~2 s. The simulator defaults already use `127.0.0.1`.
-
-## Stop / reset
+## 6. First incident
 
 ```powershell
-docker compose down          # stop, keep database data
-docker compose down -v       # stop AND delete database data (re-seeded on next start)
+.\.venv\Scripts\python.exe load_generator.py --duration 1200     # terminal 1 — leave running
 ```
 
-## Troubleshooting
+Wait **2 minutes** (so OpsMind has a healthy baseline), then in terminal 2:
 
-| Symptom | Cause / fix |
+```powershell
+.\.venv\Scripts\python.exe create_incident.py --type cache
+```
+
+Within ~60 s INC-1001 appears in the dashboard as *Pending approval*. Continue with
+[demo.md](demo.md) §4.
+
+## 7. Optional upgrades
+
+| Upgrade | How |
 |---|---|
-| `port is already allocated` | Change the port in `.env`, then `docker compose up -d` |
-| `set POSTGRES_USER in .env` | You skipped step 1 |
-| product-api `unhealthy` / restarting | `docker compose logs product-api` — usually DB credentials changed after the volume was created; run `docker compose down -v` |
-| `/health` shows `postgres: down` | `docker compose ps postgres`; wait for `healthy` |
-| Tests: `Connection refused` in `test_live_stack` | Stack not running, or wrong ports in `TEST_*` URLs |
-| Simulator: `Cannot reach Redis at ...` | Stack not running (`docker compose ps`) or `REDIS_HOST_PORT` changed — pass `--redis-url` |
-| Incident injected but latency normal | Check `--status`: memory must be ~100% and policy `volatile-lru` (see above) |
-| Load generator p99 ≈ 2000 ms even when healthy | You passed a `localhost` URL — use `127.0.0.1` |
+| Gemini / Groq diagnosis | put `GEMINI_API_KEY` and/or `GROQ_API_KEY` in `.env` → `docker compose up -d --no-deps opsmind-backend` ([TECH_STACK §7.9](../TECH_STACK.md#79-enable-gemini--groq)) |
+| Slack approvals | create the app from `infrastructure/slack/app-manifest.yml`, set the three `SLACK_*` values ([TECH_STACK §7.10](../TECH_STACK.md#710-enable-slack)) |
+| Jenkins CI/CD | `docker compose --profile cicd up -d --build jenkins` → <http://127.0.0.1:8081> ([TECH_STACK §7.8](../TECH_STACK.md#78-jenkins)) |
+| Hindsight fact extraction | `HINDSIGHT_LLM_PROVIDER=gemini`, `HINDSIGHT_LLM_API_KEY`, `HINDSIGHT_LLM_MODEL` → `docker compose up -d hindsight` |
+
+## 8. Tests
+
+See [TECH_STACK §7.6](../TECH_STACK.md#76-tests). Every suite enforces ≥ 80 % coverage.
+
+## 9. Reset / stop
+
+```powershell
+cd incident-simulator; .\.venv\Scripts\python.exe reset_demo.py --yes   # clear incidents + memory
+docker compose down        # stop (keeps data)
+docker compose down -v     # stop and delete ALL data (databases, Hindsight memory, Jenkins)
+```
+
+## 10. Troubleshooting
+
+See [TECH_STACK §8](../TECH_STACK.md#8-troubleshooting) — the most common ones:
+
+- **No incident appears** → the load generator must be running (alerts need traffic).
+- **"baseline of 800 ms"** → traffic started too recently; wait 2 minutes before injecting.
+- **`hindsight: down`** right after first start → it's downloading its model; wait 1–2 minutes.
+- Use **`127.0.0.1`**, not `localhost`, and **`curl.exe`**, not `curl`.

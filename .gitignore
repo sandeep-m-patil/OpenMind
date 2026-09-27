@@ -27,3 +27,6 @@ Thumbs.db
 .vscode/
 .idea/
 *.log
+
+# Frontend build/test output
+coverage/

@@ -1,0 +1,13 @@
+# Alertmanager: forwards firing alerts to the OpsMind backend webhook.
+route:
+  receiver: opsmind
+  group_by: [alertname, service]
+  group_wait: 5s
+  group_interval: 30s
+  repeat_interval: 1h
+
+receivers:
+  - name: opsmind
+    webhook_configs:
+      - url: http://opsmind-backend:8000/v1/alerts/prometheus
+        send_resolved: true

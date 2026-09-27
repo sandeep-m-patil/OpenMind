@@ -6,14 +6,15 @@
 
 OpsMind is an AI-assisted Site Reliability Engineering platform. When a production service misbehaves,
 OpsMind gathers the evidence, recalls how similar incidents were handled before, proposes a
-**pre-approved** remediation runbook, asks a human for approval in Slack, executes the approved action
-through controlled automation, verifies recovery with real metrics — and stores the entire experience
-in **Hindsight** memory so the next recommendation is better.
+**pre-approved** remediation runbook, asks a human for approval (dashboard or Slack), executes the
+approved action through Ansible, verifies recovery with real metrics — and stores the entire experience
+in **[Hindsight](https://github.com/vectorize-io/hindsight)** so the next recommendation is better.
 
 Built for **HackwithHyderabad 3.0** — theme: *"AI Agents That Learn Using Hindsight"*.
-Runs entirely on a laptop at **₹0** (Docker + free LLM tiers).
+Runs entirely on a laptop at **₹0** (Docker, self-hosted Hindsight, optional free-tier LLMs).
 
-📘 **Tech stack, architecture and every command:** [TECH_STACK.md](TECH_STACK.md)
+📘 **Tech stack, architecture and every command:** [TECH_STACK.md](TECH_STACK.md) ·
+🎬 **Live demo script:** [docs/demo.md](docs/demo.md)
 
 ---
 
@@ -23,7 +24,7 @@ Runs entirely on a laptop at **₹0** (Docker + free LLM tiers).
 2. [What OpsMind does](#2-what-opsmind-does)
 3. [Philosophy: not autonomous, on purpose](#3-philosophy-not-autonomous-on-purpose)
 4. [How OpsMind learns](#4-how-opsmind-learns)
-5. [The demo story](#5-the-demo-story)
+5. [The demo — measured results](#5-the-demo--measured-results)
 6. [Safety model](#6-safety-model)
 7. [Project status](#7-project-status)
 8. [Quick start](#8-quick-start)
@@ -44,246 +45,219 @@ ALERT → open dashboards → read logs → compare metrics → check recent dep
       → get a review → execute → watch metrics → write the postmortem
 ```
 
-Worse, the knowledge gained is fragile. The engineer who knew *"don't flush the whole cache — only
-the stale session keys"* is asleep, on leave, or has changed teams. The next person repeats the
-investigation from scratch — and may repeat the mistake.
+Worse, the knowledge gained is fragile. The engineer who knew *"don't flush the whole cache — only the
+stale session keys"* is asleep, on leave, or has changed teams. The next person repeats the investigation
+from scratch — and may repeat the mistake.
 
 **OpsMind removes the repetitive overhead and turns every incident into organizational memory.**
 
 ## 2. What OpsMind does
 
-For every incident, OpsMind runs one traceable workflow:
+Every incident runs through one traceable [LangGraph](https://langchain-ai.github.io/langgraph/) workflow:
 
-| # | Step | Who does it |
-|---|---|---|
-| 1 | **Intake** — receive the alert (service, severity, symptom) | System |
-| 2 | **Evidence** — collect logs, metrics, service health, recent deployments, git changes | Controlled tools |
-| 3 | **Recall** — ask Hindsight for similar past incidents, what worked, what failed, operator preferences | Hindsight |
-| 4 | **Diagnosis** — probable root cause, confidence score, supporting evidence | LLM (structured output) |
-| 5 | **Runbook plan** — select a *pre-approved* runbook ID, estimate risk | LLM picks, code validates |
-| 6 | **Policy gate** — deterministic risk/policy checks | Code |
-| 7 | **Human approval** — Approve / Edit / Reject / Execute manually, via Slack | **Human** |
-| 8 | **Execution** — run the approved runbook through Ansible / Jenkins | Controlled tools |
-| 9 | **Verification** — compare before vs after using real metrics | Code |
-| 10 | **Learning** — write a postmortem and retain the full experience in Hindsight | Hindsight |
+| # | Node | What happens | Who |
+|---|---|---|---|
+| 1 | **Intake** | Prometheus alert (via Alertmanager) or manual trigger becomes an incident | System |
+| 2 | **Evidence** | `get_metrics`, `get_logs`, `get_service_health`, `get_recent_deployments`, `get_git_changes` → deterministic findings | Controlled tools |
+| 3 | **Recall** | Ask Hindsight for similar incidents, what worked, what failed, what operators said — *before* diagnosing | Hindsight |
+| 4 | **Diagnosis** | Root cause, category, confidence, evidence — one structured LLM call, or the rule engine | Gemini / Groq / rules |
+| 5 | **Planner** | Validate the chosen runbook ID against the catalog; risk & policy gate; strategy score | Code |
+| 6 | **Approval** ⏸ | The graph **stops**. Approve / Edit / Reject / Execute manually | **Human** |
+| 7 | **Execution** | Ansible **dry run first**, then the real run | Ansible / Jenkins |
+| 8 | **Verification** | Poll Prometheus until P95, hit ratio and health recover — before vs after | Code |
+| 9 | **Learning** | Postmortem + lesson retained in Hindsight; strategy scores updated | Hindsight |
 
-Every step is visible in an execution trace, with concise operational reasoning — for example:
+Every step appears in the incident's trace as concise operational reasoning (never hidden chain-of-thought).
+From the real run:
 
 ```
-✓ Redis memory reached 100% (limit 32 MB); 2,715 keys evicted
-✓ P95 latency rose from 13 ms to 6.9 s (≈500×); cache hit ratio fell from 100% to 5%
-✓ Similar incident INC-812 was resolved with RB-CACHE-001 (targeted stale-session cleanup)
-✓ auth-service was deployed 7 minutes before the alert
+✓ evidence   P95 latency is 2.2 s vs a baseline of 5 ms (461× higher).
+             Redis memory is at 100% of its limit. Cache hit ratio is 38%.
+             220 'cache write rejected' warnings (Redis maxmemory) in the last 5 min.
+             auth-service v2.4.0 was deployed 1 min ago (Refactor session storage to Redis hashes).
+✓ recall     Hindsight recalled 1 memories (1 past incidents)
+             INC-1001: operator overruled RB-CACHE-002 → RB-CACHE-001 ("Do not clear the entire cache …")
+✓ planner    Proposed RB-CACHE-001 (Targeted stale-session cache cleanup), risk LOW — strategy score 1.00
 ```
-
-(The hidden chain-of-thought is never exposed — only evidence and conclusions.)
 
 ## 3. Philosophy: not autonomous, on purpose
 
-OpsMind is **not** an autonomous agent that "fixes production by itself". That would be unsafe and
-would not be trusted by real SRE teams.
+OpsMind is **not** an agent that "fixes production by itself". That would be unsafe, and no real SRE team
+would trust it.
 
 - The **AI** is fast at reading evidence, searching history and drafting a plan.
-- The **human** holds context the AI can't see ("that cache also stores active sessions") and owns
-  the decision.
+- The **human** holds context the AI can't see ("that Redis also stores active sessions") and owns the decision.
 - **Systems** (Ansible, Jenkins) execute only vetted, versioned runbooks.
 - **Hindsight** makes sure the human's judgement is remembered and applied next time.
 
-> AI doesn't replace the SRE engineer. It removes repetitive investigation and execution overhead.
-> Human expertise stays in the loop. Every incident becomes organizational memory.
-> Every human correction makes future recommendations better.
-
 ## 4. How OpsMind learns
 
-**Learning mechanism:** *human-in-the-loop learning through persistent operational memory and
-remediation outcomes.*
+**Mechanism:** *human-in-the-loop learning through persistent operational memory and remediation outcomes.*
 
-After every incident OpsMind retains a structured learning record in Hindsight:
+After every incident, the Learning node retains a structured record in Hindsight:
 
 ```
-Incident → Symptoms → Evidence → AI diagnosis → AI recommendation
-        → Human decision (approved / modified / rejected) → Human modification
-        → Executed action → Verification result (real metrics) → Lesson learned
+Incident → symptoms & evidence → AI diagnosis → AI recommendation
+        → human decision (approved / modified / rejected) → the human's comment
+        → executed action → verification (real metrics) → lesson
 ```
 
-On the next incident, the **recall** step retrieves these records *before* the diagnosis is made,
-so the model reasons with:
+— as narrative text (what Hindsight embeds and searches) plus metadata (`recommended_runbook`,
+`final_runbook`, `decision`, `outcome`, `operator_comment`, P95 before/after).
 
-- similar past incidents and their root causes
-- remediations that **succeeded** — and ones that **failed**
-- **operator corrections** (e.g. "targeted cleanup, not a full flush")
-- verified before/after metrics
+On the next incident, **recall happens before diagnosis**. OpsMind turns the recalled memories into
+guidance — *preferred* runbooks (verifiably resolved a similar incident) and *overruled* runbooks
+(humans rejected or replaced them, and why). The LLM prompt and the rule engine both use it, the policy
+gate raises the risk of overruled runbooks, and a **strategy score** per runbook
+(`succeeded ÷ (proposed + adopted)`) is shown as supporting evidence.
 
-The agent's recommendation therefore changes because of memory — that is the visible improvement.
+> **Terminology:** Hindsight is a memory system. It does **not** do reinforcement learning, and OpsMind
+> trains no model. Improvement comes from recalled experience and verified outcomes.
 
-Later (Phase 14), a lightweight **strategy score** per remediation strategy — built from counts of
-approvals, modifications, rejections, successes and failures — will be shown as supporting evidence.
+## 5. The demo — measured results
 
-> **Terminology note:** Hindsight is a memory system. It does **not** perform reinforcement learning,
-> and OpsMind does not train a neural network. Improvement comes from recalled experience and outcomes.
+Scenario: an **auth-service deploy drops the TTL on user sessions**. Sessions pile up in the shared
+Redis; Redis (`volatile-lru`) may only evict keys that *have* a TTL — product-api's cache — so every
+product request becomes a slow database query and latency explodes. 300 of the sessions belong to users
+who are **active right now**: flushing the cache would fix latency *and log them all out*.
 
-## 5. The demo story
+Clean run from a blank memory, 50 req/s steady traffic, Windows 11 + Docker Desktop:
 
-The primary scenario is **cache saturation** on `product-api`, which is already reproducible today.
-
-### What goes wrong
-
-A deploy of the auth-service drops the TTL (expiry) on user-session keys. Sessions pile up in the
-shared Redis forever. Redis is configured to evict only keys *with* a TTL — so when memory fills,
-it evicts product-api's cache instead. Every product request becomes a cache miss that costs a slow
-database query, traffic keeps arriving faster than the service can now handle, and latency explodes.
-
-Measured on the local stack at 50 requests/second:
-
-| | Healthy | During incident |
+| | **INC-1001** — first time | **INC-1002** — same incident again |
 |---|---|---|
-| P95 latency | **13 ms** | **6.9 s** |
-| Cache hit ratio | 100% | ~5% |
-| Redis memory | 4% | 100% |
-| Logs | quiet | `cache write rejected … used memory > 'maxmemory'`, `slow request` |
+| Evidence | P95 2.2 s vs 5 ms baseline (461×), Redis 100 %, hit ratio 38 % | same pattern |
+| Hindsight recall | *no similar past incidents* | **INC-1001 + the operator's exact words** |
+| AI recommendation | `RB-CACHE-002` full cache flush | **`RB-CACHE-001` targeted stale-session cleanup** |
+| Risk / confidence | **HIGH** / 80 % | **LOW** / 92 % |
+| Human | **Modified** → RB-CACHE-001: *"Do not clear the entire cache — this Redis also holds active user sessions. Only remove stale session keys."* | **Approved** (one click) |
+| Execution (Ansible) | dry run → 19,156 stale / 300 active; apply → 19,156 deleted, 300 kept | same |
+| Verified by Prometheus | **P95 4.6 s → 313 ms**, hit ratio 18 % → 93 %, Redis 100 % → 6 % | **P95 4.9 s → 276 ms**, hit ratio 8 % → 96 % |
+| Strategy score after | RB-CACHE-001 **1.00**, RB-CACHE-002 **0.00** | RB-CACHE-001 **1.00** (2 successes) |
 
-There is a trap: **300 of the sessions belong to users who are active right now.** Flushing the whole
-cache fixes latency *and logs every one of them out*.
+**Same problem, better first recommendation, less human effort — because of Hindsight.**
 
-### Incident #1 — the AI learns from the human
-
-1. Monitoring detects high latency → OpsMind opens an incident.
-2. OpsMind collects the evidence above. Hindsight has nothing relevant yet.
-3. AI diagnosis: *Redis cache saturation* (confidence e.g. 80%). Recommendation: *clear the cache.*
-4. Slack message → the engineer **edits**: *"Don't clear the entire cache. Only remove stale session keys."*
-5. The modified runbook `RB-CACHE-001` (targeted stale-session cleanup) runs via Ansible.
-6. Verification with real metrics: P95 6.9 s → ~20 ms. Active users stay logged in. **Resolved.**
-7. The full experience — including the human correction — is retained in Hindsight.
-
-### Incident #2 — the AI remembers
-
-The same incident is triggered again. This time recall returns incident #1, and OpsMind says:
-
-> *"A similar incident was previously resolved using targeted session-key cleanup. The previous
-> operator rejected a full cache purge because it was unnecessarily broad and would log out active
-> users. The targeted cleanup reduced P95 latency from 6.9 s to ~20 ms. I recommend RB-CACHE-001."*
-
-The engineer approves with one click. **Same problem, better first recommendation, less human effort
-— because of Hindsight.**
+Step-by-step script with talking points: [docs/demo.md](docs/demo.md).
 
 ## 6. Safety model
 
 ```
-AI proposal → policy / risk gate → human approval → controlled tool → execution → verification
+LLM proposes a runbook ID → policy / risk gate → human approval → vetted playbook
+                         → Ansible --check (dry run) → Ansible apply → verify with real metrics
 ```
 
-OpsMind will **never**:
+OpsMind **never**:
 
-- execute arbitrary LLM-generated shell commands — the LLM can only choose a **runbook ID**
-  (e.g. `RB-CACHE-001`); the backend loads the vetted runbook
-- execute remediation without human approval
-- run `terraform apply`, modify infrastructure or security groups automatically
-- delete databases or restart critical systems automatically
-- declare success because a command returned exit code 0 — **success is proven by metrics**
+- executes LLM-generated commands — the LLM can only name an ID from the catalog; an invented ID is
+  rejected by code, and every parameter is validated against declared type / bounds / allowlist
+- executes anything without a human decision (the graph is paused at an interrupt)
+- runs `terraform apply`, changes security groups, deletes databases, or restarts services on its own
+- declares success from an exit code — **success is proven by Prometheus**
 
-Initial runbooks (Phase 7):
+| Runbook | Action | Risk | Executor |
+|---|---|---|---|
+| `RB-CACHE-001` | Delete sessions idle > `max_idle_hours` (1–720, default 24) | LOW | Ansible → Redis |
+| `RB-CACHE-002` | Full cache flush (`FLUSHDB`) | HIGH | Ansible → Redis |
+| `RB-SERVICE-001` | Restart the product-api container (allowlisted) | MEDIUM | Ansible → Docker API |
+| `RB-DEPLOY-001` | Roll back to the previous build | MEDIUM | Ansible → Jenkins |
 
-| ID | Action | Risk |
-|---|---|---|
-| `RB-CACHE-001` | Targeted stale-session cache cleanup | Low |
-| `RB-SERVICE-001` | Restart application service | Medium |
-| `RB-DEPLOY-001` | Roll back deployment | Medium |
-
-Failures are handled explicitly (LLM or rate-limit errors, Hindsight/Slack/Jenkins unavailable,
-malformed LLM output, invalid runbook, execution timeout) — never silently.
+Graceful degradation — each verified by tests: LLM missing / rate-limited / malformed → rule engine;
+Hindsight down → continue without history, record kept in the DB; Prometheus down → "missing evidence";
+Slack down → dashboard approval; dry run fails → abort before apply; execution timeout; invalid runbook
+or parameters → HTTP 422; two approvers at once → HTTP 409.
 
 ## 7. Project status
 
-OpsMind is built incrementally — one working vertical slice before expanding.
-
 | Phase | Deliverable | Status |
 |---|---|---|
-| 0 | Project foundation (structure, docs, config) | ✅ Done |
-| 1 | Local production environment: product-api + Redis + PostgreSQL, logs, metrics | ✅ Done |
-| 2 | Deterministic incident simulator (cache saturation) + fixed-rate load generator | ✅ Done |
-| 3 | Prometheus + Grafana dashboard + high-latency alert | ⏭ Next |
-| 4 | LangGraph investigation workflow (typed state, structured LLM output) | Planned |
-| 5 | Controlled evidence tools (`get_logs`, `get_metrics`, …) | Planned |
-| 6 | Hindsight (self-hosted) retain / recall | Planned |
-| 7 | Pre-approved runbook system | Planned |
-| 8 | Human-in-the-loop approval states | Planned |
-| 9 | Slack integration | Planned |
-| 10 | Ansible execution (with check/dry-run mode) | Planned |
-| 11 | Jenkins CI/CD + deploy correlation | Planned |
-| 12 | Metric-based verification | Planned |
-| 13 | Learning loop (second-incident demo) | Planned |
-| 14 | Strategy scoring | Planned |
-| 15 | React dashboard | Planned |
+| 0 | Project foundation | ✅ |
+| 1 | product-api + Redis + PostgreSQL, JSON logs, Prometheus metrics | ✅ |
+| 2 | Deterministic incident simulator + fixed-rate load generator + demo reset | ✅ |
+| 3 | Prometheus, Alertmanager, Grafana dashboard, `HighLatency` alert → OpsMind | ✅ |
+| 4 | LangGraph workflow: 9 nodes, typed state, Postgres checkpointer, human interrupt | ✅ |
+| 5 | Controlled evidence tools with a uniform result contract | ✅ |
+| 6 | Self-hosted Hindsight retain / recall | ✅ |
+| 7 | Runbook catalog + parameter validation + policy gate | ✅ |
+| 8 | Approval states: Approve / Modify / Reject / Execute manually | ✅ |
+| 9 | Slack: incident message with buttons (Socket Mode, no public URL) | ✅ built & unit-tested; needs your Slack tokens to run live |
+| 10 | Ansible execution with `--check` dry run | ✅ |
+| 11 | Jenkins: test → build `build-N` → deploy → smoke test → report; rollback job | ✅ |
+| 12 | Metric-based verification (before vs after) | ✅ |
+| 13 | Learning loop — second incident gets the better recommendation | ✅ |
+| 14 | Strategy scoring | ✅ |
+| 15 | React + TypeScript dashboard | ✅ |
+| — | Gemini / Groq diagnosis | ✅ built & unit-tested; add a free API key to use it (rule engine otherwise) |
+| — | Terraform | not started (deliberately out of MVP scope) |
 
-**Milestones:** ① app + cache incident + logs + metrics + Gemini diagnosis + runbook proposal →
-② Hindsight → ③ human approval → ④ Ansible → ⑤ Slack → ⑥ Jenkins → ⑦ learning loop → ⑧ dashboard.
-
-Tests: product-api 24 tests (97% coverage), incident-simulator 31 tests (98% coverage).
+**Tests** (all enforce ≥ 80 % coverage): backend 126 tests (94 %), product-api 24 (96 %),
+incident-simulator 38 (97 %), dashboard 21 (98 % lines).
 
 ## 8. Quick start
 
-Requires Windows 11 + Docker Desktop (WSL2 backend) + Python 3.11. Run in PowerShell from the
-project folder.
+Requires Windows 11 + Docker Desktop (WSL2) + Python 3.11 (+ Node 24 only to develop the dashboard).
 
 ```powershell
-Copy-Item .env.example .env                  # first time only
-docker compose up -d --build                 # start Redis, PostgreSQL, product-api
-curl.exe http://127.0.0.1:8001/health        # expect "status":"ok"
+Copy-Item .env.example .env          # first time only — defaults work, keys are optional
+docker compose up -d --build         # 9 containers; first run downloads ~5 GB (Hindsight is 3.6 GB)
 ```
 
-Reproduce the incident (from `incident-simulator\`, after the one-time venv setup in
-[TECH_STACK.md §7.4](TECH_STACK.md#74-incident-simulator)):
+| Open | URL |
+|---|---|
+| OpsMind dashboard | <http://127.0.0.1:3002> |
+| Grafana | <http://127.0.0.1:3001> |
+| OpsMind API docs | <http://127.0.0.1:8002/docs> |
+| Hindsight UI | <http://127.0.0.1:9999> |
+
+Then run the demo (one-time simulator setup in [TECH_STACK.md §7.3](TECH_STACK.md#73-incident-simulator-one-time-setup)):
 
 ```powershell
-.\.venv\Scripts\python.exe load_generator.py --duration 20                # healthy
-.\.venv\Scripts\python.exe create_incident.py --type cache                # break it
-.\.venv\Scripts\python.exe load_generator.py --duration 20 --no-warmup    # see the incident
-.\.venv\Scripts\python.exe create_incident.py --type cache --restore      # reset
+cd incident-simulator
+.\.venv\Scripts\python.exe load_generator.py --duration 1200      # terminal 1: keep running
+.\.venv\Scripts\python.exe create_incident.py --type cache        # terminal 2: after ≥ 2 min
 ```
 
-Every command, with expected output and troubleshooting: **[TECH_STACK.md](TECH_STACK.md)**.
+→ watch INC-1001 appear in the dashboard, edit it to `RB-CACHE-001`, then inject again for INC-1002.
 
 ## 9. Repository layout
 
 ```
 OpsMind/
+├── backend/                  # OpsMind orchestrator — FastAPI + LangGraph
+│   ├── app/agents/           #   graph, typed state, 9 nodes, rule engine, memory guidance, verdict
+│   ├── app/tools/            #   evidence tools (metrics, logs, health)
+│   ├── app/services/         #   Hindsight, LLM, runbooks, policy, executor, Slack, stores, workflow
+│   ├── app/api/              #   /v1/alerts, /v1/incidents, /v1/runbooks, /v1/strategies, /v1/memories, /v1/deployments
+│   └── tests/                #   workflow, services, API, runbook scripts, Postgres integration
+├── frontend/                 # React + TypeScript dashboard (Vite, served by nginx)
 ├── product-api/              # The "production" service OpsMind watches
-│   ├── app/                  #   FastAPI app: cache, db, service, metrics, middleware, logging
-│   ├── tests/                #   unit tests (fakes) + integration tests (live containers)
-│   ├── Dockerfile
-│   └── requirements*.txt
-├── incident-simulator/       # Deterministic incidents + load
-│   ├── create_incident.py    #   --type cache [--status | --restore]
-│   ├── load_generator.py     #   fixed-rate traffic + latency report
-│   ├── scenarios/            #   one module per incident type
-│   └── tests/
+├── incident-simulator/       # create_incident.py, load_generator.py, reset_demo.py
+├── runbooks/                 # RB-*.yml — the ONLY actions the AI may propose
+├── infrastructure/
+│   ├── ansible/              #   playbooks + scripts executed for each runbook
+│   ├── jenkins/              #   image, config-as-code, deploy & rollback pipelines
+│   └── slack/                #   Slack app manifest (Socket Mode)
+├── monitoring/               # Prometheus config + alert rules, Alertmanager, Grafana dashboard
 ├── docs/                     # architecture.md, setup.md, demo.md
-├── docker-compose.yml        # local "production" environment
-├── .env.example              # configuration template (copy to .env)
-├── README.md                 # this file — the project
-├── TECH_STACK.md             # stack, architecture, commands
-└── CHANGELOG.md
+├── docker-compose.yml
+├── .env.example
+├── README.md · TECH_STACK.md · CHANGELOG.md
 ```
-
-Planned folders — `backend/` (orchestrator), `frontend/`, `runbooks/`, `monitoring/`,
-`infrastructure/{ansible,jenkins,terraform}/` — are created when their phase starts.
 
 ## 10. How this maps to the judging criteria
 
-| Criterion | Weight | How OpsMind addresses it |
+| Criterion | Weight | Evidence in OpsMind |
 |---|---|---|
-| **Innovation** | 30% | Human corrections become durable, recallable operational knowledge; the AI is a copilot with a safety gate, not an unsafe autopilot |
-| **Hindsight Memory** | 25% | Memory is the core of the product: recall happens *before* diagnosis and changes the recommendation; every incident, decision and outcome is retained |
-| **Technical Implementation** | 20% | Real instrumented service, reproducible incident, typed LangGraph state, structured LLM output, controlled runbook IDs, metric-based verification, tests with coverage gates |
-| **User Experience** | 15% | Slack-native approval (Approve / Edit / Reject / Manual), a single incident screen showing diagnosis → decision → result → lesson |
-| **Real-world Impact** | 10% | Cuts repetitive investigation time; stops knowledge from being lost between engineers; runs at ₹0 |
+| **Innovation** | 30 % | Human corrections become durable, recallable knowledge that changes the next plan; a copilot with a hard safety gate instead of an unsafe autopilot |
+| **Hindsight Memory** | 25 % | Memory is on the critical path: recall runs *before* diagnosis and changes runbook, risk and confidence (INC-1001 vs INC-1002 above); every decision and verified outcome is retained |
+| **Technical Implementation** | 20 % | Real instrumented service and reproducible incident; LangGraph with typed state, Postgres checkpointing and a human interrupt; structured LLM output with fallback; Ansible dry-run → apply; metric verification; 209 tests with coverage gates |
+| **User Experience** | 15 % | One-glance incident summary, live trace, Approve / Edit / Reject / Manual in the dashboard or Slack, learning page with strategy scores and memory search |
+| **Real-world Impact** | 10 % | Minutes of repetitive investigation become seconds; tribal knowledge survives people changing teams; runs at ₹0 |
 
 ## 11. Documentation index
 
 | Document | Contents |
 |---|---|
-| [TECH_STACK.md](TECH_STACK.md) | Technology choices, architecture diagrams, component internals, all commands |
-| [docs/architecture.md](docs/architecture.md) | Design decisions in depth |
-| [docs/setup.md](docs/setup.md) | Step-by-step setup and troubleshooting |
+| [TECH_STACK.md](TECH_STACK.md) | Technology choices, architecture diagrams, component internals, every command, troubleshooting |
+| [docs/architecture.md](docs/architecture.md) | Design decisions and why |
+| [docs/setup.md](docs/setup.md) | Step-by-step setup, including optional Gemini, Slack and Jenkins |
 | [docs/demo.md](docs/demo.md) | Live demo script with talking points |
 | [CHANGELOG.md](CHANGELOG.md) | What changed, phase by phase |

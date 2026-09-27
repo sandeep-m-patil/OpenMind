@@ -40,6 +40,12 @@ class CappedRedis:
             return redis.exceptions.OutOfMemoryError("command not allowed when used memory > 'maxmemory'.")
         return self.store.hset(key, mapping=fields)
 
+    def hset(self, key: str, mapping: dict):
+        result = self.apply(key, mapping)
+        if isinstance(result, redis.exceptions.OutOfMemoryError):
+            raise result
+        return result
+
     def info(self, section: str) -> dict:
         if section == "memory":
             return {"used_memory": self.store.dbsize() * MEGABYTE // 32, "maxmemory": 32 * MEGABYTE}

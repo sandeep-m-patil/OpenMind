@@ -30,7 +30,7 @@ def _envelope(data=None, meta=None, error=None) -> dict:
 
 def create_app(factory: Callable[[Settings], Dependencies] = build_dependencies) -> FastAPI:
     settings = load_settings()
-    configure_logging(settings.service_name, settings.log_level)
+    configure_logging(settings.service_name, settings.log_level, settings.log_file)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

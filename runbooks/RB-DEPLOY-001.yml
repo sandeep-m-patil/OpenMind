@@ -1,0 +1,17 @@
+id: RB-DEPLOY-001
+title: Roll back deployment
+strategy: deployment_rollback
+category: bad_deployment
+risk: MEDIUM
+description: >-
+  Triggers the Jenkins rollback job, which redeploys the previous successful build of the service.
+  Appropriate when a recent deployment introduced the regression. Does not clean up data that the
+  bad version already wrote.
+executor: ansible
+playbook: deploy_rollback.yml
+parameters:
+  service:
+    type: string
+    default: product-api
+    enum: [product-api]
+    description: Service to roll back (only services deployed by Jenkins).

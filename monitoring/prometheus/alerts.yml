@@ -1,0 +1,39 @@
+# Alert rules. HighLatency is the one that opens an OpsMind incident.
+groups:
+  - name: product-api
+    rules:
+      - alert: HighLatency
+        # P95 of product lookups over the last minute, in seconds.
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="product-api", path="/products/{product_id}"}[1m]))
+          ) > 1
+        for: 30s
+        labels:
+          severity: critical
+          service: product-api
+        annotations:
+          summary: "product-api P95 latency above 1s"
+          description: "P95 latency of GET /products/{id} is {{ $value | humanizeDuration }} (threshold 1s)."
+
+      - alert: CacheSaturation
+        expr: redis_memory_utilization_ratio{job="product-api"} > 0.95
+        for: 30s
+        labels:
+          severity: warning
+          service: product-api
+        annotations:
+          summary: "Redis memory above 95%"
+          description: "Redis memory utilization is {{ $value | humanizePercentage }}."
+
+      - alert: HighErrorRate
+        expr: |
+          sum(rate(http_request_errors_total{job="product-api"}[1m]))
+            / sum(rate(http_requests_total{job="product-api"}[1m])) > 0.05
+        for: 30s
+        labels:
+          severity: critical
+          service: product-api
+        annotations:
+          summary: "product-api 5xx rate above 5%"
+          description: "Error rate is {{ $value | humanizePercentage }}."

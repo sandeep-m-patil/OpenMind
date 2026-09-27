@@ -27,6 +27,7 @@ WRITE_BATCH_SIZE = 500
 SCAN_BATCH_SIZE = 1000
 # Safety cap so a Redis without a memory limit can't be filled forever.
 MAX_STALE_SESSIONS = 200_000
+MAX_TOP_UP_WRITES = 5_000
 KEY_HASH_LENGTH = 16
 
 SECONDS_PER_MINUTE = 60
@@ -35,6 +36,18 @@ STALE_AGE_SECONDS = 72 * SECONDS_PER_HOUR
 # A session not seen for this long is "stale" (used by --status and, later, RB-CACHE-001).
 STALE_THRESHOLD_SECONDS = 24 * SECONDS_PER_HOUR
 ACTIVE_SPREAD_MINUTES = 30
+
+
+# The deployment that "caused" this incident, recorded in OpsMind so it can correlate change → incident.
+DEPLOY_EVENT = {
+    "service": "auth-service",
+    "version": "v2.4.0",
+    "commit_sha": "9f3c2e1",
+    "author": "dev-team",
+    "description": "Refactor session storage to Redis hashes",
+    "changes": ["session store: move from strings to hashes", "session writes: HSET without EXPIRE (TTL dropped)"],
+    "source": "incident-simulator",
+}
 
 
 @dataclass(frozen=True)
@@ -92,6 +105,20 @@ def _write_batch(client: redis.Redis, batch: list[tuple[str, dict]]) -> tuple[in
     return len(results) - len(rejected), is_full
 
 
+def _top_up(client: redis.Redis, kind: str, last_seen_for: Callable[[int], int], start: int) -> int:
+    """After a pipelined batch hits OOM, Redis frees that batch's ~0.5 MB input buffer once it's
+    processed — enough headroom to cache most products again, which made the incident's severity
+    vary run to run. Filling the last gap one small write at a time closes it deterministically."""
+    written = 0
+    for i in range(start, start + MAX_TOP_UP_WRITES):
+        try:
+            client.hset(session_key(kind, i), mapping=_session_fields(i, last_seen_for(i)))
+        except redis.exceptions.OutOfMemoryError:
+            break
+        written += 1
+    return written
+
+
 def _write_sessions(
     client: redis.Redis, kind: str, last_seen_for: Callable[[int], int], limit: int
 ) -> tuple[int, bool]:
@@ -102,7 +129,7 @@ def _write_sessions(
         count, is_full = _write_batch(client, batch)
         written += count
         if is_full:
-            return written, True
+            return written + _top_up(client, kind, last_seen_for, start + count), True
     return written, False
 
 

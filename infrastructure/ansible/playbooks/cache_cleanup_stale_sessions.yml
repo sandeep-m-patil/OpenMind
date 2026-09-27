@@ -1,0 +1,23 @@
+# RB-CACHE-001 — Targeted stale-session cache cleanup.
+# In --check mode the script runs with --dry-run: it counts what WOULD be deleted, deletes nothing.
+- name: RB-CACHE-001 targeted stale-session cleanup
+  hosts: local
+  gather_facts: false
+  vars:
+    max_idle_hours: 24
+    redis_url: "{{ lookup('ansible.builtin.env', 'REDIS_URL') }}"
+  tasks:
+    - name: Delete sessions idle for at least {{ max_idle_hours }} hours
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - "{{ playbook_dir }}/../scripts/cleanup_stale_sessions.py"
+          - --redis-url
+          - "{{ redis_url }}"
+          - --max-idle-hours
+          - "{{ max_idle_hours | int }}"
+          - --result-file
+          - "{{ opsmind_result_file }}"
+          - "{{ '--dry-run' if ansible_check_mode else '--apply' }}"
+      check_mode: false
+      changed_when: not ansible_check_mode

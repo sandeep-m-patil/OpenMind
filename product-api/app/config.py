@@ -16,6 +16,7 @@ DEFAULT_SEED_PRODUCT_COUNT = 500
 class Settings:
     service_name: str
     log_level: str
+    log_file: str
     redis_url: str
     database_url: str
     cache_ttl_seconds: int
@@ -29,6 +30,7 @@ def load_settings() -> Settings:
     return Settings(
         service_name=os.getenv("SERVICE_NAME", "product-api"),
         log_level=os.getenv("LOG_LEVEL", "INFO"),
+        log_file=os.getenv("LOG_FILE", ""),
         redis_url=os.getenv("REDIS_URL", "redis://localhost:6379/0"),
         database_url=os.getenv("DATABASE_URL", "postgresql://localhost:5432/shop"),
         cache_ttl_seconds=int(os.getenv("CACHE_TTL_SECONDS", DEFAULT_CACHE_TTL_SECONDS)),

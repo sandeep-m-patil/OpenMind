@@ -1,0 +1,13 @@
+fastapi==0.141.1
+uvicorn[standard]==0.54.0
+pydantic==2.13.5
+httpx==0.28.1
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3
+langgraph==1.2.12
+langgraph-checkpoint-postgres==3.1.2
+slack-sdk==3.44.1
+pyyaml==6.0.3
+# used by runbook scripts executed through Ansible
+redis==5.2.1
+ansible-core==2.19.13

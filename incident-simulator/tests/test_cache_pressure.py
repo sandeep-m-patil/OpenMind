@@ -28,6 +28,28 @@ def test_injected_sessions_have_no_ttl(capped_redis):
     assert capped_redis.store.ttl(cp.session_key("stale", 0)) == -1
 
 
+def test_top_up_fills_headroom_left_by_pipeline_buffers():
+    class BufferedRedis(CappedRedis):
+        """Pipelines hit OOM 50 keys early (their input buffer counts as memory); single writes don't."""
+
+        def pipeline(self, transaction=True):
+            self.capacity_keys -= 50
+            pipe = super().pipeline(transaction)
+            original = pipe.execute
+
+            def execute(raise_on_error=True):
+                results = original(raise_on_error)
+                self.capacity_keys += 50
+                return results
+
+            pipe.execute = execute
+            return pipe
+
+    result = cp.inject(BufferedRedis(capacity_keys=1000), now=NOW)
+
+    assert result.active_written + result.stale_written == 1000
+
+
 def test_saturation_during_active_phase_writes_no_stale_sessions():
     result = cp.inject(CappedRedis(capacity_keys=100), now=NOW)
 

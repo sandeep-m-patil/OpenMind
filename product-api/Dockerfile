@@ -10,8 +10,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 
-# Don't run as root inside the container.
-RUN useradd --create-home appuser
+# Don't run as root inside the container. The log directory is a shared volume read by OpsMind.
+RUN useradd --create-home appuser \
+    && mkdir -p /var/log/product-api && chown appuser /var/log/product-api
 USER appuser
 
 EXPOSE 8000

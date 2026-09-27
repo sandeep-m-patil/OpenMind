@@ -1,0 +1,48 @@
+// Redeploy the build before the one currently running. Triggered by OpsMind (RB-DEPLOY-001) after approval.
+pipeline {
+  agent any
+  options { disableConcurrentBuilds() }
+  environment {
+    COMPOSE = "docker compose -f /opsmind/docker-compose.yml --env-file /opsmind/.env"
+  }
+  stages {
+    stage('Find previous build') {
+      steps {
+        sh '''
+          current=$(docker inspect opsmind-product-api-1 --format '{{.Config.Image}}' | sed 's/.*://')
+          echo "current: $current"
+          builds=$(docker images opsmind-product-api --format '{{.Tag}}' | grep '^build-' | sed 's/build-//' | sort -n)
+          case "$current" in
+            build-*) previous=$(echo "$builds" | awk -v cur="${current#build-}" '$1 < cur' | tail -1) ;;
+            # Running image wasn't deployed by Jenkins (e.g. a local `docker compose up` rebuilt :latest):
+            # revert to the newest CI-built version.
+            *) previous=$(echo "$builds" | tail -1); echo "current image is not a Jenkins build; reverting to newest CI build" ;;
+          esac
+          if [ -z "$previous" ]; then echo "No earlier build to roll back to"; exit 1; fi
+          echo "build-$previous" > target.txt
+          echo "rolling back to build-$previous"
+        '''
+      }
+    }
+    stage('Deploy previous build') {
+      steps { sh 'PRODUCT_API_TAG=$(cat target.txt) $COMPOSE up -d --no-deps --no-build product-api' }
+    }
+    stage('Smoke test') {
+      steps {
+        retry(10) {
+          sleep(time: 3, unit: 'SECONDS')
+          sh 'curl -fsS http://product-api:8000/health'
+        }
+      }
+    }
+    stage('Report deployment') {
+      steps {
+        sh '''
+          curl -fsS -X POST http://opsmind-backend:8000/v1/deployments -H 'Content-Type: application/json' \
+            -d "{\\"service\\":\\"product-api\\",\\"version\\":\\"$(cat target.txt)\\",\\"source\\":\\"jenkins-rollback\\",\\"description\\":\\"Rollback via RB-DEPLOY-001\\"}" \
+            || echo "OpsMind unavailable, rollback not recorded"
+        '''
+      }
+    }
+  }
+}
